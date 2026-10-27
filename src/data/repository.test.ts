@@ -88,3 +88,85 @@ describe('IndexedDB repository', () => {
     expect(await new IndexedDBRepository(name).read()).toEqual(backup);
   });
 });
+
+import { vi } from 'vitest';
+describe('audit recovery regressions', () => {
+  it('reopens after an initial access failure without replacing the repository', async () => {
+    const r = new IndexedDBRepository(id());
+    const spy = vi.spyOn(indexedDB, 'open').mockImplementationOnce(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    await expect(r.read()).rejects.toThrow();
+    spy.mockRestore();
+    expect((await r.read()).products.length).toBeGreaterThan(0);
+  });
+  it('exports raw corrupt data without modifying it and allows an explicit replacement', async () => {
+    const name = id(),
+      r = new IndexedDBRepository(name);
+    await r.read();
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const q = indexedDB.open(name, 1);
+      q.onsuccess = () => resolve(q.result);
+      q.onerror = () => reject(q.error);
+    });
+    const corrupt = { version: 99, important: 'preserve original' };
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('inventory', 'readwrite');
+      tx.objectStore('inventory').put(corrupt, 'snapshot');
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+    await expect(r.read()).rejects.toThrow(/Versi/);
+    expect(await r.readRaw()).toEqual(corrupt);
+    await expect(r.read()).rejects.toThrow();
+    await r.update(() => emptyInventory());
+    expect(await r.read()).toEqual(emptyInventory());
+  });
+  it('rolls back stock and history if put fails with a quota error', async () => {
+    const r = new IndexedDBRepository(id()),
+      before = await r.read();
+    const spy = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    try {
+      await expect(
+        r.update((d) =>
+          addMovement(d, {
+            productId: d.products[0]!.id,
+            type: 'in',
+            quantity: 1,
+            date: today(),
+            note: '',
+          }),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await r.read()).toEqual(before);
+  });
+  it('permits only one of two concurrent withdrawals when both cannot be fulfilled', async () => {
+    const name = id(),
+      a = new IndexedDBRepository(name),
+      b = new IndexedDBRepository(name),
+      before = await a.read(),
+      p = before.products[0]!;
+    const results = await Promise.allSettled(
+      [a, b].map((r) =>
+        r.update((d) =>
+          addMovement(d, {
+            productId: p.id,
+            type: 'out',
+            quantity: p.stock,
+            date: today(),
+            note: '',
+          }),
+        ),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect((await a.read()).products[0]!.stock).toBe(0);
+    expect((await a.read()).movements.length).toBe(before.movements.length + 1);
+  });
+});

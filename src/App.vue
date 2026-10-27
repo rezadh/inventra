@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   Boxes,
@@ -9,18 +9,33 @@ import {
   ArrowLeftRight,
   ChartNoAxesCombined,
   Settings2,
-  PanelLeftClose,
   Menu,
   X,
   ArrowUpRight,
   ShieldCheck,
   ChevronDown,
-  Bell,
   CircleHelp,
 } from 'lucide-vue-next';
 import { state, load } from './store';
+import DataControls from './components/DataControls.vue';
+import { useDialogFocus } from './composables/useDialogFocus';
 const route = useRoute();
-const mobile = ref(false);
+const mobile = ref(false),
+  smallScreen = ref(false),
+  sidebar = ref<HTMLElement>();
+const drawerActive = computed(() => smallScreen.value && mobile.value);
+useDialogFocus(sidebar, drawerActive, () => (mobile.value = false));
+let media: MediaQueryList;
+function screenChanged() {
+  smallScreen.value = media.matches;
+  if (!media.matches) mobile.value = false;
+}
+onMounted(() => {
+  media = window.matchMedia('(max-width: 680px)');
+  screenChanged();
+  media.addEventListener('change', screenChanged);
+});
+onUnmounted(() => media?.removeEventListener('change', screenChanged));
 const links = [
   { path: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: 'barang', label: 'Manajemen Barang', icon: Package },
@@ -39,7 +54,17 @@ onMounted(load);
       aria-label="Tutup navigasi"
       @click="mobile = false"
     ></button>
-    <aside class="sidebar" :class="{ open: mobile }">
+    <aside
+      id="workspace-navigation"
+      ref="sidebar"
+      class="sidebar"
+      :class="{ open: mobile }"
+      :inert="(smallScreen && !mobile) || undefined"
+      :role="drawerActive ? 'dialog' : undefined"
+      :aria-modal="drawerActive ? true : undefined"
+      aria-label="Navigasi workspace"
+      tabindex="-1"
+    >
       <RouterLink to="/dashboard" class="brand" @click="mobile = false"
         ><span class="brand-mark"><Boxes :size="25" /></span
         ><span>inventra<span class="brand-dot">.</span></span></RouterLink
@@ -82,12 +107,14 @@ onMounted(load);
         </div>
       </div>
     </aside>
-    <div class="main-shell">
+    <div class="main-shell" :inert="drawerActive || undefined">
       <header class="topbar">
         <div class="breadcrumb">
           <button
             class="icon-button desktop-collapse"
             aria-label="Buka atau tutup navigasi mobile"
+            aria-controls="workspace-navigation"
+            :aria-expanded="drawerActive"
             @click="mobile = !mobile"
           >
             <Menu :size="20" /></button
@@ -106,7 +133,7 @@ onMounted(load);
           <div class="avatar" title="Workspace demo tanpa autentikasi">NS</div>
         </div>
       </header>
-      <main id="main-content">
+      <main id="main-content" tabindex="-1">
         <div v-if="state.loading" class="load-state" role="status">
           <span class="spinner"></span>Menyiapkan workspace Anda…
         </div>
@@ -114,6 +141,7 @@ onMounted(load);
           <h2>Data belum dapat dimuat</h2>
           <p>{{ state.error }}</p>
           <button class="button primary" @click="load">Coba lagi</button>
+          <DataControls recovery />
         </div>
         <RouterView v-else />
       </main>

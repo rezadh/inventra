@@ -2268,3 +2268,95 @@ th {
 .search-input input::placeholder {
   color: #748278;
 }
+/* Readable small text and keyboard/touch targets, including mobile layouts. */
+.chart-summary > div,
+.chart-summary small,
+.chart-summary > .chart-caption,
+.quantity small,
+.workspace-card small,
+.empty-state p {
+  color: #627268;
+}
+.text-green {
+  color: #267349;
+}
+.text-red {
+  color: #a85543;
+}
+.text-amber {
+  color: #8f681e;
+}
+.icon-button {
+  min-width: 36px;
+  min-height: 36px;
+}
+.form-grid input:disabled {
+  background: #f1f4f2;
+  color: #526557;
+}
+.error-state > .settings-actions {
+  width: min(100%, 800px);
+}
+.upload-button:focus-within {
+  outline: 3px solid #40ad8b;
+  outline-offset: 3px;
+}
+@media (max-width: 680px) {
+  .icon-button,
+  .button,
+  .button.small {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .page-heading p,
+  .stat-top,
+  .panel-heading p,
+  .badge,
+  td,
+  th,
+  .sidebar-foot,
+  .main-footer,
+  .main-footer > span:last-child,
+  .chart-summary > div,
+  .stat-value > span,
+  .stat-bottom,
+  .product-cell small,
+  .quantity small,
+  .table-toolbar select,
+  .date-filters input,
+  .pagination {
+    font-size: 12px;
+  }
+  .chart-summary small,
+  .bar-group > span,
+  .chart-axis {
+    font-size: 10px;
+  }
+  .category-card-top {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+.text-link,
+.panel-bottom-link,
+.toast,
+.form-grid label {
+  color: #42684f;
+}
+.danger-button {
+  color: #9d4636;
+}
+@media (max-width: 680px) {
+  input,
+  select,
+  textarea,
+  .search-input input,
+  .toolbar-controls > select,
+  .date-filters input,
+  .select-small select {
+    font-size: 16px;
+  }
+  .panel-heading {
+    flex-wrap: wrap;
+  }
+}

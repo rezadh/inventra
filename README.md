@@ -4,7 +4,7 @@ Demo portofolio inventaris berbahasa Indonesia. Vue 3 Composition API, TypeScrip
 
 ## Menjalankan
 
-Memerlukan **Node.js 22.12+** (lihat `.node-version`). Node 16 tidak didukung.
+Memerlukan **Node.js 22.22.2+ pada jalur 22 LTS** (lihat `.node-version`). Alternatif: Node 24.15+ pada jalur 24 LTS atau Node 26+. Batas ini mengikuti alat tes jsdom; Node 16 tidak didukung.
 
 ```sh
 npm ci
@@ -40,18 +40,22 @@ src/
   style.css                   design system dan breakpoint/cetak
   store.ts                    state reaktif bersama dan orkestrasi persistence
   components/
+    DataControls.vue            backup, reset, dan pemulihan saat error
     Workspace.vue             halaman dan form
     Modal.vue                 dialog aksesibel
   domain/
     inventory.ts              model, kontrak repository, aturan bisnis, validasi
     inventory.test.ts         pengujian aturan dan use case
+  composables/                pagination dan fokus dialog/drawer
+  services/                   unduhan dan orkestrasi worker backup
   data/
+    backup.worker.ts           parsing dan validasi impor di worker lokal
     repository.ts             adapter IndexedDB
     repository.test.ts        pengujian integrasi database
     seed.ts                   data fiktif relatif terhadap hari inisialisasi
 public/
   _headers                    header keamanan Cloudflare
-  _redirects                  fallback SPA
+                              fallback SPA bawaan Cloudflare Pages
 ```
 
 Komponen hanya mengirim input ke fungsi domain. Domain tidak mengakses IndexedDB maupun Vue. Store menggunakan kontrak `InventoryRepository`; adapter persistence dapat diganti tanpa mengubah markup komponen. State Vue reaktif cukup untuk demo kecil sehingga Pinia tidak ditambahkan. Lucide menyediakan ikon konsisten (ISC), Vue/Vite/router dan alat tes memakai lisensi open source; tidak ada aset kantor, gambar pihak ketiga, font remote, atau tracker.
@@ -62,25 +66,26 @@ Komponen hanya mengirim input ke fungsi domain. Domain tidak mengakses IndexedDB
 - Product `1 → N` Movement melalui `productId`.
 - Product menyimpan `stock` sebagai saldo materialisasi. Movement adalah sumber kebenaran audit; saldo wajib sama dengan penjumlahan semua mutasi produk.
 - Stok awal dibuat sebagai mutasi masuk, bukan nilai tanpa jejak histori.
+- Satuan barang dikunci setelah memiliki histori agar arti saldo dan transaksi lama tetap benar.
 - Setiap transaksi mempunyai UUID. Kuantitas dan stok berupa safe integer; satuan pecahan belum didukung.
-- Histori diurutkan menurut tanggal bisnis lalu waktu pencatatan. Tidak boleh ada saldo negatif pada titik mana pun; transaksi bertanggal mundur yang melanggar aturan ditolak walaupun saldo akhir cukup.
+- Histori diurutkan menurut tanggal bisnis lalu timestamp UTC. Timestamp impor dinormalisasi sebelum pemeriksaan; timestamp setara mempertahankan urutan array. Tidak boleh ada saldo negatif pada titik mana pun; transaksi bertanggal mundur yang melanggar aturan ditolak walaupun saldo akhir cukup.
 - Transaksi tercatat tidak dapat diubah/hapus. Koreksi memakai transaksi lawan yang baru dan catatan alasan. Ini menjaga histori sederhana tanpa mekanisme pembatalan kompleks.
 - Barang diarsipkan, tidak dihapus permanen; histori tetap dapat ditelusuri. Barang arsip tidak dapat ditransaksikan.
 - Harga modal merupakan harga pada produk saat ini, bukan akuntansi nilai transaksi historis.
 
 ## IndexedDB dan konsistensi
 
-Database `inventra-demo`, schema versi `1`, object store `inventory`, key `snapshot`. Snapshot memuat `version: 1`, produk, kategori dan histori. Skema snapshot dipilih agar operasi lintas entitas atomik tanpa library tambahan. Ini sesuai skala demo; validasi dan penulisan seluruh snapshot berbiaya linear dan bukan rancangan untuk jutaan transaksi.
+Database `inventra-demo`, schema versi `1`, object store `inventory`, key `snapshot`. Snapshot memuat `version: 1`, produk, kategori dan histori. Skema snapshot dipilih agar operasi lintas entitas atomik tanpa library tambahan. Ini sesuai skala demo, bukan rancangan untuk jutaan transaksi. Validasi memakai Set/Map dan histori dikelompokkan sekali; pengurutan histori berbiaya O(M log M) pada kasus terburuk, sedangkan serialisasi dan penulisan snapshot tetap memproses seluruh data.
 
 Data contoh diisi **hanya di `onupgradeneeded` ketika database dibuat**. Database kosong setelah penghapusan data oleh aplikasi tetap kosong setelah refresh. Reset contoh hanya dilakukan lewat tindakan eksplisit.
 
 Setiap mutasi membaca keadaan terkini dan menulis snapshot tervalidasi dalam satu transaksi `readwrite`. UI berubah setelah commit berhasil. IndexedDB menyerialkan transaksi sehingga dua tab tidak kehilangan pembaruan. BroadcastChannel memberi tahu tab lain untuk membaca snapshot terbaru; kegagalan sinkronisasi diberitahukan. Browser tanpa BroadcastChannel tetap mendapat konsistensi penulisan; muat ulang untuk melihat perubahan tab lain.
 
-Kegagalan buka/baca menampilkan error dan tombol coba lagi. Kegagalan tulis mempertahankan data lama serta menampilkan pesan pada form. Upgrade berikutnya harus memakai versi database baru dan migrasi dalam `versionchange`; backup dengan versi yang tidak dikenal ditolak, tidak dimigrasikan diam-diam. Koneksi ditutup saat versi lain diminta. Backup disarankan sebelum upgrade besar.
+Kegagalan buka/baca menampilkan error, retry yang membuka ulang koneksi, serta panel pemulihan. Panel ini menyediakan ekspor snapshot mentah, impor backup valid, dan reset dengan konfirmasi. Ekspor mentah berformat `inventra-raw-recovery`, bukan backup normal siap impor; simpan untuk pemeriksaan/pemulihan manual dan jangan membagikannya jika memuat data sensitif. Database lama yang melewati kapasitas baru tetap dapat diekspor mentah tanpa ditimpa. Validasi data tersimpan tidak bergantung pada tanggal perangkat hari ini; larangan tanggal mendatang tetap berlaku pada transaksi baru. Kegagalan tulis mempertahankan data lama serta menampilkan pesan pada form. Upgrade berikutnya harus memakai versi database baru dan migrasi dalam `versionchange`; backup dengan versi yang tidak dikenal ditolak, tidak dimigrasikan diam-diam. Koneksi ditutup saat versi lain diminta. Backup disarankan sebelum upgrade besar.
 
 ## Backup, privasi dan reset
 
-Backup JSON memuat seluruh histori dan barang arsip. Impor maksimum 10 MB, 10.000 barang, 1.000 kategori, 100.000 mutasi. Divalidasi struktur, versi, tipe, kode unik, ID unik, referensi, kategori, angka, tanggal, saldo akhir dan saldo historis sebelum konfirmasi dan kembali sebelum commit. Batas ini adalah batas proteksi input, bukan jaminan performa untuk snapshot sebesar itu.
+Backup JSON memuat seluruh histori dan barang arsip. Backup normal dan snapshot hasil penulisan memakai batas identik **64 MiB**, 10.000 barang, 1.000 kategori, 100.000 mutasi. Divalidasi struktur, versi, tipe, kode unik, ID unik, referensi, kategori, angka, tanggal, saldo akhir dan saldo historis sebelum konfirmasi dan kembali sebelum commit. Batas byte dihitung dari JSON UTF-8 ringkas dan field yang dikenal, bukan metadata tambahan. Semua backup normal yang diekspor sesuai batas impor. Parsing dan validasi file dilakukan di Web Worker lokal tanpa jaringan. Batas ini adalah proteksi kapasitas, bukan jaminan performa untuk snapshot sebesar itu; commit IndexedDB masih memvalidasi di main thread.
 
 Impor mengganti data, tidak menggabungkan. Reset dan hapus data membutuhkan konfirmasi. Ekspor backup lebih dahulu jika data ingin dipertahankan. CSV menggunakan escaping kutip dan mitigasi formula spreadsheet.
 
@@ -94,18 +99,20 @@ Light mode dengan latar netral hijau pucat, surface putih, aksen emerald `#087f5
 
 Jalankan `npm test`. Tes mencakup mutasi masuk/keluar, stok negatif, backdating, validasi barang dan kategori, CRUD/arsip, konsistensi histori, import tidak valid, backup roundtrip, seed sekali, persistence lintas instance, rollback, dan concurrent write. IndexedDB pada suite memakai `fake-indexeddb`; ini bukan pengujian engine browser asli.
 
+Tes regresi tambahan mencakup retry storage, ekspor mentah snapshot rusak, kegagalan quota, dua pengeluaran bersamaan, timestamp dengan offset, rollback tanggal perangkat, penguncian satuan, backup di atas 10 MiB, pagination setelah arsip, dan alur konfirmasi komponen dengan DOM simulasi.
+
 Hasil terverifikasi terakhir dicatat di `QA.md`. Pemeriksaan visual responsive, focus/keyboard, refresh browser asli, download/upload file dan end-to-end **belum dijalankan** karena koneksi browser otomatis tidak tersedia pada sesi implementasi. Tidak ada klaim E2E berhasil.
 
 ## Deployment Cloudflare Pages
 
-Build command `npm run build`, output directory `dist`, Node `22` (atau lebih baru sesuai engines). Panduan resmi: https://developers.cloudflare.com/pages/framework-guides/deploy-a-vue-site/
+Build command `npm run build`, output directory `dist`, Node `22.23.4` (atau versi lain yang memenuhi engines). Panduan resmi: https://developers.cloudflare.com/pages/framework-guides/deploy-a-vue-site/
 
 1. Gunakan repository Git pribadi milik Anda dan commit source beserta `package-lock.json`; jangan commit `node_modules`, `.env` atau kredensial.
-2. Hubungkan repository ke Cloudflare Pages melalui akun Cloudflare Anda, pilih branch produksi dan konfigurasi build di atas. Atur `NODE_VERSION=22` jika diperlukan.
+2. Hubungkan repository ke Cloudflare Pages melalui akun Cloudflare Anda, pilih branch produksi dan konfigurasi build di atas. Atur `NODE_VERSION=22.23.4` jika diperlukan.
 3. Alternatif: jalankan build lokal dan unggah folder `dist` melalui Direct Upload di Cloudflare Pages.
 4. Setelah deployment, verifikasi URL publik, refresh langsung `/barang`, header keamanan, mutasi/persistence dan backup pada domain final.
 
-`public/_redirects` menyediakan fallback Vue Router. Tidak ada secret yang diperlukan di frontend. Mengganti domain/origin akan membuat penyimpanan browser baru; pindahkan data memakai backup JSON jika diperlukan.
+Cloudflare Pages menyediakan fallback SPA bawaan selama build tidak memuat `404.html` tingkat root. Aturan `/* /index.html 200` yang sebelumnya ditolak emulator karena loop telah dihapus. Tidak ada secret yang diperlukan di frontend. Mengganti domain/origin akan membuat penyimpanan browser baru; pindahkan data memakai backup JSON jika diperlukan.
 
 **Belum dipublikasikan:** tidak ada akun, project atau akses deployment Cloudflare yang disediakan dalam sesi ini. Tidak ada URL publik yang diklaim.
 

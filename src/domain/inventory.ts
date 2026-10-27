@@ -32,7 +32,14 @@ export interface Inventory {
 }
 export interface InventoryRepository {
   read(): Promise<Inventory>;
+  readRaw(): Promise<unknown>;
   update(change: (data: Inventory) => Inventory): Promise<Inventory>;
+}
+export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
+export const INVENTORY_LIMITS = { products: 10000, categories: 1000, movements: 100000 } as const;
+export function assertBackupSize(bytes: number) {
+  if (bytes > MAX_BACKUP_BYTES)
+    throw new Error('Data melebihi kapasitas demo 64 MiB. Tidak ada perubahan yang disimpan.');
 }
 export const id = () => crypto.randomUUID();
 export const today = () => {
@@ -45,21 +52,27 @@ export const emptyInventory = (): Inventory => ({
   categories: [],
   movements: [],
 });
-export function validateProduct(p: Product, data: Inventory) {
+function validateProductFields(p: Product, categoryIds: Set<string>) {
   if (!p.name.trim() || p.name.length > 120)
     throw new Error('Nama barang wajib diisi, maksimal 120 karakter.');
   if (!/^[A-Z0-9_-]{2,30}$/.test(p.code))
     throw new Error('Kode terdiri dari 2–30 huruf kapital, angka, - atau _.');
-  if (data.products.some((x) => x.code.toLowerCase() === p.code.toLowerCase() && x.id !== p.id))
-    throw new Error('Kode barang sudah digunakan.');
-  if (!data.categories.some((c) => c.id === p.categoryId))
-    throw new Error('Pilih kategori yang tersedia.');
+  if (!categoryIds.has(p.categoryId)) throw new Error('Pilih kategori yang tersedia.');
   if (!p.unit.trim() || p.unit.length > 20)
     throw new Error('Satuan wajib diisi, maksimal 20 karakter.');
   if (!Number.isSafeInteger(p.minimum) || p.minimum < 0)
     throw new Error('Minimum stok harus berupa bilangan bulat positif atau nol.');
   if (p.cost !== null && (!Number.isFinite(p.cost) || p.cost < 0 || p.cost > 1e12))
     throw new Error('Harga modal tidak valid.');
+}
+export function validateProduct(p: Product, data: Inventory) {
+  validateProductFields(p, new Set(data.categories.map((c) => c.id)));
+  if (data.products.some((x) => x.id !== p.id && x.code.toLowerCase() === p.code.toLowerCase()))
+    throw new Error('Kode barang sudah digunakan.');
+}
+/** Dates with different offsets must be compared as instants, never lexically. */
+export function compareMovements(a: Movement, b: Movement) {
+  return a.date.localeCompare(b.date) || Date.parse(a.createdAt) - Date.parse(b.createdAt);
 }
 export function addMovement(data: Inventory, input: Omit<Movement, 'id' | 'createdAt'>): Inventory {
   const product = data.products.find((p) => p.id === input.productId && !p.archived);
@@ -88,11 +101,16 @@ function validDate(value: string) {
   );
 }
 export function validateLedger(data: Inventory) {
+  const histories = new Map<string, Movement[]>();
+  for (const m of data.movements) {
+    const history = histories.get(m.productId);
+    if (history) history.push(m);
+    else histories.set(m.productId, [m]);
+  }
   for (const p of data.products) {
     let balance = 0;
-    const history = data.movements
-      .filter((m) => m.productId === p.id)
-      .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+    // Stable sorting preserves insertion order for equal business date/timestamp.
+    const history = (histories.get(p.id) || []).sort(compareMovements);
     for (const m of history) {
       balance += m.type === 'in' ? m.quantity : -m.quantity;
       if (!Number.isSafeInteger(balance) || balance < 0)
@@ -103,25 +121,56 @@ export function validateLedger(data: Inventory) {
     if (balance !== p.stock) throw new Error(`Saldo ${p.code} tidak sesuai histori transaksi.`);
   }
 }
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function timestamp(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
+}
+function canonicalJSON(data: Inventory) {
+  const json = JSON.stringify(data);
+  assertBackupSize(new TextEncoder().encode(json).byteLength);
+  return json;
+}
+export function serializeBackup(value: unknown): string {
+  return canonicalJSON(parseBackup(value));
+}
 export function parseBackup(value: unknown): Inventory {
-  // Import is an untrusted boundary: reject incomplete, oversized, or inconsistent snapshots.
-  if (!value || typeof value !== 'object') throw new Error('Format backup tidak valid.');
-  const d = value as Inventory;
+  if (!record(value)) throw new Error('Format backup tidak valid.');
   if (
-    d.version !== 1 ||
-    !Array.isArray(d.products) ||
-    !Array.isArray(d.categories) ||
-    !Array.isArray(d.movements)
+    value.version !== 1 ||
+    !Array.isArray(value.products) ||
+    !Array.isArray(value.categories) ||
+    !Array.isArray(value.movements)
   )
     throw new Error('Versi atau struktur backup tidak didukung.');
-  if (d.products.length > 10000 || d.categories.length > 1000 || d.movements.length > 100000)
+  if (
+    value.products.length > INVENTORY_LIMITS.products ||
+    value.categories.length > INVENTORY_LIMITS.categories ||
+    value.movements.length > INVENTORY_LIMITS.movements
+  )
     throw new Error('Backup melebihi kapasitas demo.');
-  const unique = (items: { id: string }[]) =>
-    items.every((x) => typeof x.id === 'string' && x.id.length > 0 && x.id.length < 100) &&
-    new Set(items.map((x) => x.id)).size === items.length;
-  if (!unique(d.products) || !unique(d.categories) || !unique(d.movements))
-    throw new Error('ID backup tidak valid atau duplikat.');
-  for (const c of d.categories)
+  const ids = (items: unknown[]) => {
+    const set = new Set<string>();
+    for (const x of items) {
+      if (
+        !record(x) ||
+        typeof x.id !== 'string' ||
+        !x.id.length ||
+        x.id.length >= 100 ||
+        set.has(x.id)
+      )
+        throw new Error('ID backup tidak valid atau duplikat.');
+      set.add(x.id);
+    }
+    return set;
+  };
+  const categoryIds = ids(value.categories),
+    productIds = ids(value.products);
+  ids(value.movements);
+  const names = new Set<string>(),
+    codes = new Set<string>();
+  const categories: Category[] = value.categories.map((c: Category) => {
     if (
       typeof c.name !== 'string' ||
       !c.name.trim() ||
@@ -130,39 +179,69 @@ export function parseBackup(value: unknown): Inventory {
       !/^#[0-9a-f]{6}$/i.test(c.color)
     )
       throw new Error('Kategori backup tidak valid.');
-  if (new Set(d.categories.map((c) => c.name.trim().toLowerCase())).size !== d.categories.length)
-    throw new Error('Nama kategori duplikat.');
-  for (const p of d.products) {
+    const name = c.name.trim();
+    if (names.has(name.toLowerCase())) throw new Error('Nama kategori duplikat.');
+    names.add(name.toLowerCase());
+    return { id: c.id, name, color: c.color };
+  });
+  const products: Product[] = value.products.map((p: Product) => {
     if (
       typeof p.name !== 'string' ||
       typeof p.code !== 'string' ||
       typeof p.unit !== 'string' ||
+      typeof p.categoryId !== 'string' ||
       typeof p.archived !== 'boolean' ||
       !Number.isSafeInteger(p.stock) ||
       p.stock < 0 ||
-      typeof p.createdAt !== 'string' ||
-      !Number.isFinite(Date.parse(p.createdAt))
+      !timestamp(p.createdAt)
     )
       throw new Error('Barang backup tidak valid.');
-    validateProduct(p, d);
-  }
-  for (const m of d.movements)
+    validateProductFields(p, categoryIds);
+    if (codes.has(p.code.toLowerCase())) throw new Error('Kode barang sudah digunakan.');
+    codes.add(p.code.toLowerCase());
+    return {
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      categoryId: p.categoryId,
+      unit: p.unit,
+      cost: p.cost,
+      minimum: p.minimum,
+      stock: p.stock,
+      archived: p.archived,
+      createdAt: new Date(p.createdAt).toISOString(),
+    };
+  });
+  const movements: Movement[] = value.movements.map((m: Movement) => {
+    // Existing history stays readable if the user's clock or timezone moves back.
+    // Future dates are still prohibited when creating a new movement.
     if (
-      !d.products.some((p) => p.id === m.productId) ||
+      !productIds.has(m.productId) ||
       !['in', 'out'].includes(m.type) ||
       !Number.isSafeInteger(m.quantity) ||
       m.quantity <= 0 ||
       typeof m.date !== 'string' ||
       !validDate(m.date) ||
-      m.date > today() ||
       typeof m.note !== 'string' ||
       m.note.length > 500 ||
-      typeof m.createdAt !== 'string' ||
-      !Number.isFinite(Date.parse(m.createdAt))
+      !timestamp(m.createdAt)
     )
       throw new Error('Transaksi backup tidak valid.');
-  validateLedger(d);
-  return structuredClone(d);
+    return {
+      id: m.id,
+      productId: m.productId,
+      type: m.type,
+      quantity: m.quantity,
+      date: m.date,
+      note: m.note,
+      createdAt: new Date(m.createdAt).toISOString(),
+    };
+  });
+  const data: Inventory = { version: 1, categories, products, movements };
+  validateLedger(data);
+  // Only known, bounded fields survive import. Export and writes share this exact budget.
+  canonicalJSON(data);
+  return data;
 }
 
 export interface ProductInput {
@@ -193,6 +272,10 @@ export function saveProduct(data: Inventory, input: ProductInput, productId = ''
     createdAt: old?.createdAt || new Date().toISOString(),
   };
   validateProduct(p, d);
+  if (old && old.unit !== p.unit && d.movements.some((m) => m.productId === old.id))
+    throw new Error(
+      'Satuan tidak dapat diubah setelah barang memiliki histori. Buat barang baru untuk satuan berbeda.',
+    );
   if (old) d.products[d.products.findIndex((x) => x.id === old.id)] = p;
   else d.products.push(p);
   return !old && input.initial

@@ -12,31 +12,23 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
-  SlidersHorizontal,
   Download,
-  Upload,
   RotateCcw,
   Trash2,
   Pencil,
   Archive,
   FolderOpen,
   CalendarDays,
-  ChevronDown,
-  ArrowDown,
-  ArrowUp,
   Printer,
   Database,
   ShieldCheck,
   HardDrive,
-  X,
-  ArrowLeftRight,
 } from 'lucide-vue-next';
 import Modal from './Modal.vue';
 import { state, activeProducts, save, notify } from '../store';
 import {
+  compareMovements,
   addMovement,
-  emptyInventory,
-  parseBackup,
   today,
   saveProduct,
   saveCategory,
@@ -44,13 +36,14 @@ import {
   toggleArchive,
   type Product,
 } from '../domain/inventory';
-import { createSeed } from '../data/seed';
+import DataControls from './DataControls.vue';
+import { downloadFile } from '../services/files';
+import { usePagination } from '../composables/usePagination';
 const props = defineProps<{ page: string }>();
 const search = ref(''),
   categoryFilter = ref(''),
   statusFilter = ref(''),
   sort = ref('name'),
-  currentPage = ref(1),
   period = ref('30'),
   start = ref(''),
   end = ref(''),
@@ -130,13 +123,10 @@ const filteredProducts = computed(() =>
           : a.name.localeCompare(b.name),
     ),
 );
-const pagedProducts = computed(() =>
-  filteredProducts.value.slice((currentPage.value - 1) * 8, currentPage.value * 8),
-);
+const productPagination = usePagination(filteredProducts, 8);
+const pagedProducts = productPagination.items;
 const sortedMovements = computed(() =>
-  [...state.data.movements].sort(
-    (a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
-  ),
+  [...state.data.movements].sort((a, b) => compareMovements(b, a)),
 );
 const filteredMovements = computed(() =>
   sortedMovements.value.filter(
@@ -150,9 +140,16 @@ const filteredMovements = computed(() =>
       (!statusFilter.value || m.type === statusFilter.value),
   ),
 );
-const pagedMovements = computed(() =>
-  filteredMovements.value.slice((currentPage.value - 1) * 10, currentPage.value * 10),
-);
+const movementPagination = usePagination(filteredMovements, 10);
+const pagedMovements = movementPagination.items;
+const currentPage = computed({
+  get: () =>
+    props.page === 'barang' ? productPagination.page.value : movementPagination.page.value,
+  set: (value) => {
+    if (props.page === 'barang') productPagination.page.value = value;
+    else movementPagination.page.value = value;
+  },
+});
 const recent = computed(() => sortedMovements.value.slice(0, 5));
 const chart = computed(() => {
   const days = Number(period.value),
@@ -239,21 +236,26 @@ function openMovement(type: 'in' | 'out' = 'in', productId = '') {
   modal.value = 'movement';
 }
 async function submitProduct() {
+  const input = { ...form.value };
+  const productId = editing.value;
   await attempt(async () => {
     await save(
-      (d) => saveProduct(d, form.value, editing.value),
+      (d) => saveProduct(d, input, productId),
       editing.value ? 'Barang berhasil diperbarui' : 'Barang baru berhasil ditambahkan',
     );
   });
 }
 async function submitCategory() {
+  const input = { ...categoryForm.value };
+  const categoryId = editing.value;
   await attempt(async () => {
-    await save((d) => saveCategory(d, categoryForm.value, editing.value));
+    await save((d) => saveCategory(d, input, categoryId));
   });
 }
 async function submitMovement() {
+  const input = { ...movementForm.value };
   await attempt(async () => {
-    await save((d) => addMovement(d, movementForm.value), 'Transaksi stok berhasil dicatat');
+    await save((d) => addMovement(d, input), 'Transaksi stok berhasil dicatat');
   });
 }
 async function attempt(action: () => Promise<void>) {
@@ -292,14 +294,6 @@ function deleteCategory(categoryId: string) {
     () => save((d) => removeCategory(d, categoryId), 'Kategori berhasil dihapus'),
   );
 }
-function download(content: string, name: string, type: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 function csvCell(v: unknown) {
   let text = String(v ?? '');
   if (/^[\s]*[=+@\-\t\r]/.test(text)) text = "'" + text;
@@ -333,43 +327,12 @@ function exportCSV(kind: 'stock' | 'movements' = 'stock') {
             m.note,
           ]),
         ];
-  download(
+  downloadFile(
     '\uFEFF' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n'),
     `inventra-${kind}-${today()}.csv`,
     'text/csv;charset=utf-8',
   );
   notify('CSV berhasil diekspor');
-}
-async function importBackup(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  try {
-    if (file.size > 10 * 1024 * 1024) throw new Error('Ukuran backup maksimal 10 MB.');
-    const data = parseBackup(JSON.parse(await file.text()));
-    confirm(
-      'Ganti data dengan backup?',
-      `Backup berisi ${data.products.length} barang, ${data.categories.length} kategori, dan ${data.movements.length} transaksi. Seluruh data saat ini akan diganti.`,
-      () => save(() => data, 'Backup berhasil dipulihkan'),
-    );
-  } catch (e) {
-    notify(e instanceof Error ? e.message : 'Backup tidak valid.');
-  } finally {
-    input.value = '';
-  }
-}
-function reset(clear = false) {
-  confirm(
-    clear ? 'Hapus seluruh data lokal?' : 'Reset ke data contoh?',
-    clear
-      ? 'Semua barang, kategori, dan transaksi akan dihapus permanen dari browser ini. Ekspor backup terlebih dahulu.'
-      : 'Seluruh data saat ini akan diganti dengan data fiktif awal. Ekspor backup jika ingin menyimpannya.',
-    () =>
-      save(
-        () => (clear ? emptyInventory() : createSeed()),
-        clear ? 'Data lokal berhasil dihapus' : 'Data contoh berhasil dipulihkan',
-      ),
-  );
 }
 const printReport = () => window.print();
 </script>
@@ -399,7 +362,9 @@ const printReport = () => window.print();
           <div class="stat-value">{{ number(activeProducts.length) }}<span>jenis barang</span></div>
           <div class="stat-bottom">
             <span class="tiny-dot green"></span> Inventaris aktif
-            <RouterLink to="/barang"><ArrowUpRight :size="16" /></RouterLink>
+            <RouterLink to="/barang" aria-label="Lihat barang"
+              ><ArrowUpRight :size="16"
+            /></RouterLink>
           </div>
         </div>
         <div class="stat-card">
@@ -409,7 +374,9 @@ const printReport = () => window.print();
           <div class="stat-value">{{ number(stockTotal) }}<span>unit tersedia</span></div>
           <div class="stat-bottom">
             <span class="tiny-dot blue-dot"></span> Seluruh kategori
-            <RouterLink to="/laporan"><ArrowUpRight :size="16" /></RouterLink>
+            <RouterLink to="/laporan" aria-label="Lihat laporan"
+              ><ArrowUpRight :size="16"
+            /></RouterLink>
           </div>
         </div>
         <div class="stat-card">
@@ -420,7 +387,9 @@ const printReport = () => window.print();
           <div class="stat-value">{{ number(low.length) }}<span>perlu restock</span></div>
           <div class="stat-bottom">
             <span class="tiny-dot orange"></span> Di bawah atau setara minimum
-            <RouterLink to="/barang"><ArrowUpRight :size="16" /></RouterLink>
+            <RouterLink to="/barang" aria-label="Lihat barang"
+              ><ArrowUpRight :size="16"
+            /></RouterLink>
           </div>
         </div>
         <div class="stat-card">
@@ -430,7 +399,9 @@ const printReport = () => window.print();
           <div class="stat-value">{{ number(out.length) }}<span>stok kosong</span></div>
           <div class="stat-bottom">
             <span class="tiny-dot red-dot"></span> Perlu perhatian Anda
-            <RouterLink to="/barang"><ArrowUpRight :size="16" /></RouterLink>
+            <RouterLink to="/barang" aria-label="Lihat barang"
+              ><ArrowUpRight :size="16"
+            /></RouterLink>
           </div>
         </div>
       </div>
@@ -1092,49 +1063,7 @@ const printReport = () => window.print();
             keterbatasan ruang penyimpanan dapat menghapus data. Simpan backup secara berkala.
           </p>
         </section>
-        <div class="settings-actions">
-          <section class="panel settings-panel">
-            <h2>Backup & pemulihan</h2>
-            <p>
-              Unduh seluruh inventaris dan histori transaksi, atau pulihkan backup JSON yang valid.
-              Impor akan mengganti data saat ini.
-            </p>
-            <div class="heading-actions">
-              <button
-                class="button"
-                @click="
-                  download(
-                    JSON.stringify(state.data, null, 2),
-                    'inventra-backup-' + today() + '.json',
-                    'application/json',
-                  );
-                  notify('Backup JSON berhasil diekspor');
-                "
-              >
-                <Download :size="16" />Ekspor Backup</button
-              ><label class="button upload-button"
-                ><Upload :size="16" />Impor JSON<input
-                  type="file"
-                  accept=".json,application/json"
-                  aria-label="Impor backup JSON"
-                  @change="importBackup"
-              /></label>
-            </div>
-          </section>
-          <section class="panel settings-panel">
-            <h2>Mulai dari awal</h2>
-            <p>
-              Pulihkan data contoh untuk bereksplorasi kembali, atau mulai dengan inventaris kosong.
-            </p>
-            <div class="heading-actions">
-              <button class="button" @click="reset()">
-                <RotateCcw :size="16" />Reset Data Contoh</button
-              ><button class="button danger-button" @click="reset(true)">
-                <Trash2 :size="16" />Hapus Seluruh Data
-              </button>
-            </div>
-          </section>
-        </div>
+        <DataControls />
       </div>
     </template>
   </div>
@@ -1169,6 +1098,7 @@ const printReport = () => window.print();
         ><label
           >Satuan<input
             v-model="form.unit"
+            :disabled="!!editing && state.data.movements.some((m) => m.productId === editing)"
             required
             maxlength="20"
             placeholder="pcs, unit, rim" /></label
@@ -1194,7 +1124,7 @@ const printReport = () => window.print();
       <p class="form-hint">
         {{
           editing
-            ? 'Perubahan stok dicatat melalui menu Transaksi Stok.'
+            ? 'Perubahan stok melalui Transaksi Stok. Satuan dikunci jika barang sudah memiliki histori.'
             : 'Stok awal otomatis dicatat sebagai transaksi masuk hari ini.'
         }}
       </p>

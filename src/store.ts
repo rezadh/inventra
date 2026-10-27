@@ -34,19 +34,31 @@ export async function save(
   state.busy = true;
   try {
     state.data = await repo.update(change);
+    state.error = '';
     notify(message);
-    channel?.postMessage('updated');
+    try {
+      channel?.postMessage('updated');
+    } catch {
+      /* The committed local write remains successful. */
+    }
   } finally {
     state.busy = false;
   }
 }
 export const activeProducts = computed(() => state.data.products.filter((p) => !p.archived));
-const channel =
-  typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('inventra-sync') : null;
+export const readRawSnapshot = () => repo.readRaw();
+const channel = (() => {
+  try {
+    return typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('inventra-sync') : null;
+  } catch {
+    return null;
+  }
+})();
 if (channel)
   channel.onmessage = async () => {
     try {
       state.data = await repo.read();
+      state.error = '';
     } catch {
       notify('Gagal menyinkronkan data. Muat ulang halaman.');
     }

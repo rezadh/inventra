@@ -1,8 +1,8 @@
 import { createApp } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import App from './App.vue';
-import Workspace from './components/Workspace.vue';
 import './style.css';
+const Workspace = () => import('./components/Workspace.vue');
 const router = createRouter({
   history: createWebHistory(),
   routes: [
