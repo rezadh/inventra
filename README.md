@@ -12,9 +12,12 @@ npm run dev
 npm test
 npm run build
 npm run preview
+npm run format:check
 ```
 
 `npm run build` menjalankan pemeriksaan TypeScript dan menghasilkan `dist/`. Lockfile disertakan untuk instalasi yang konsisten.
+
+Code style seluruh source dan konfigurasi mengikuti `.prettierrc.json`: indentasi 2 spasi, single quote pada JavaScript/TypeScript, semicolon eksplisit, dan lebar baris 100 karakter. Jalankan `npm run format` untuk merapikan atau `npm run format:check` untuk memeriksa format tanpa mengubah file. Dependency, hasil build, dan lockfile yang dihasilkan otomatis dikecualikan lewat `.prettierignore`.
 
 ## Fitur MVP yang diimplementasikan
 

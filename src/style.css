@@ -3,7 +3,7 @@
     Inter,
     -apple-system,
     BlinkMacSystemFont,
-    "Segoe UI",
+    'Segoe UI',
     sans-serif;
   color: #263a33;
   background: #f7f9f8;
@@ -185,7 +185,7 @@ textarea {
   font-weight: 650;
 }
 .sidebar nav a.router-link-active:before {
-  content: "";
+  content: '';
   position: absolute;
   left: -19px;
   height: 23px;
@@ -1110,7 +1110,7 @@ td strong {
   color: #a0ada3;
 }
 .code {
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 9px;
 }
 .report-summary {
@@ -1369,7 +1369,7 @@ td strong {
   font-size: 12px;
   resize: vertical;
 }
-.form-grid input[type="color"] {
+.form-grid input[type='color'] {
   height: 44px;
   padding: 5px;
 }
